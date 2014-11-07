@@ -12,6 +12,7 @@ import shlex
 import sys
 import threading
 
+from prettytable import PrettyTable
 from celery import Celery
 from celery.task.control import revoke
 
@@ -170,14 +171,25 @@ class Shell(cmd.Cmd):
         return self._celery
     
     def do_ls(self, line_):
-        print(self.celery.control.inspect().stats())
-    
+        stats = self.celery.control.inspect().stats()
+        self.logger.debug(repr(stats))
+        table = PrettyTable(['client', 'hostname', 'max-concurrency', 'total requests'])
+        for k, v in stats.items():
+            table.add_row([
+                k,
+                v['broker']['hostname'],
+                v['pool']['max-concurrency'],
+                sum(v['total'].values()),
+            ])
+        print(table)
+        
+
     def do_call(self, line_):
         args = self.merge_line_args(line_)
 
         command = ' '.join(args.command_args)
 
-        self.logger.info('Executing: {}'.format(command))
+        self.logger.debug('Executing: {}'.format(command))
         task_args = [
             'ocs.run_command',
         ]
