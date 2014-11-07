@@ -11,6 +11,7 @@ import select
 import shlex
 import sys
 import threading
+from pprint import pprint
 
 from prettytable import PrettyTable
 from celery import Celery
@@ -90,20 +91,30 @@ def setup_logging(args):
     return logger
 
 
-def parser_add_args(parser, include_call_command=True):
+def parser_add_args(parser, args=None, include_call_command=True):
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--verbose', '-v', action='count')
     parser.add_argument('--version', action='version',
                         version='%(prog)s {}'.format(__version__))
 
-    default_broker = os.environ.get('OCS_BOTNET_BROKER', '127.0.0.1')
+    if args:
+        default_broker = args.broker
+        default_count = args.count
+        default_timelimit = args.time_limit
+        default_async = args.async
+    else:
+        default_broker = os.environ.get('OCS_BOTNET_BROKER', '127.0.0.1')
+        default_count = 1
+        default_timelimit = 60
+        default_async = False
     parser.add_argument('-b', '--broker', help="Broker hostname/ip",
                         default=default_broker)
+    parser.add_argument('-c', '--count', type=int, default=default_count)
     parser.add_argument('--amqp-url', help="AMQP connection url")
     parser.add_argument('-t', '--time-limit', help="Task time limit",
-                        default=60)
+                        default=default_timelimit)
     parser.add_argument('--async', help="Ignore return value",
-                        action='store_true')
+                        action='store_true', default=default_async)
 
     if include_call_command:
         parser.add_argument('command', nargs='?', metavar='COMMAND',
@@ -136,10 +147,10 @@ def is_one_command(shell, args):
     return False
 
 
-def parse_loop_line(line):
+def parse_loop_line(line, args=None):
     parser = argparse \
         .ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
-    parser = parser_add_args(parser, include_call_command=False)
+    parser = parser_add_args(parser, include_call_command=False, args=args)
     args = parser.parse_args(shlex.split(line))
     return args
 
@@ -155,11 +166,7 @@ class Shell(cmd.Cmd):
         self._celery = None
 
     def merge_line_args(self, _line):
-        line_args = parse_loop_line(_line)
-        for key, value in self.args._get_kwargs():
-            if key in line_args.__dict__ and not line_args.__dict__[key]:
-                line_args.__dict__[key] = value
-        return line_args
+        return parse_loop_line(_line, args=self.args)
 
     @property
     def celery(self):
@@ -169,47 +176,77 @@ class Shell(cmd.Cmd):
                 backend=self.args.amqp_url
             )
         return self._celery
+
+    def do_purge(self, line_):
+        purged = self.celery.control.purge()
+        logging.warn('{} purged'.format(purged))
+
+    def do_killall(self, line_):
+        for client, actives in self.celery.control.inspect().active().items():
+            for active in actives:
+                logging.warn('Revoking {}'.format(active['id']))
+                revoke(active['id'], terminate=True)
     
-    def do_ls(self, line_):
-        stats = self.celery.control.inspect().stats()
-        self.logger.debug(repr(stats))
-        table = PrettyTable(['client', 'hostname', 'max-concurrency', 'total requests'])
-        for k, v in stats.items():
-            table.add_row([
-                k,
-                v['broker']['hostname'],
-                v['pool']['max-concurrency'],
-                sum(v['total'].values()),
-            ])
-        print(table)
-        
-
-    def do_call(self, line_):
-        args = self.merge_line_args(line_)
-
-        command = ' '.join(args.command_args)
-
-        self.logger.debug('Executing: {}'.format(command))
-        task_args = [
-            'ocs.run_command',
-        ]
-        task_kwargs = {
-            'args': [command],
-            'time_limit': args.time_limit,
+    def do_stats(self, line_):
+        show = {
+            'stats': True,
+            'active': True,
+            'reserved': False,
+            'ping': False,
+            'scheduled': False,
+            'registered': False,
+            'report': False,
         }
-        if args.async:
-            task_kwargs.update({
-                'countdown': 0,
-            })
-        else:
-            task_kwargs.update({
-                # 'immediate': True,
-                'connect_timeout': 3,
-                'countdown': 1,
-            })
+
+        headers = []
+        if show['stats']:
+            stats = self.celery.control.inspect().stats()
+            logging.debug(repr(stats))
+            headers += ['client', 'max-concurrency', 'requests']
+        if show['active']:
+            active = self.celery.control.inspect().active()
+            headers.append('active')
+            logging.debug(repr(active))
+        if show['reserved']:
+            reserved = self.celery.control.inspect().reserved()
+            logging.debug(repr(reserved))
+            headers.append('reserved')
+        if show['ping']:
+            ping = self.celery.control.inspect().ping()
+            logging.debug(repr(ping))
+            headers.append('ping')
+        if show['scheduled']:
+            scheduled = self.celery.control.inspect().scheduled()
+            logging.debug(repr(scheduled))
+        if show['registered']:
+            registered = self.celery.control.inspect().registered()
+            logging.debug(repr(registered))
+        if show['report']:
+            report = self.celery.control.inspect().report()
+            logging.debug(repr(report))
+
+        clients = stats.keys()
+        self.logger.debug(repr(stats))
+        table = PrettyTable(headers)
+        for client in clients:
+            row = []
+            if show['stats']:
+                row.append(client)
+                row.append(stats[client]['pool']['max-concurrency'])
+                row.append(sum(stats[client]['total'].values()))
+            if show['active']:
+                row.append(len(active[client]))
+            if show['reserved']:
+                row.append(len(reserved[client]))
+            if show['ping']:
+                row.append(ping[client].values())
+            table.add_row(row)
+        print(table)
+
+
+    def _do_call_once(self, task_args, task_kwargs, args):
         task = self.celery.send_task(*task_args, **task_kwargs)
         self.logger.debug('Task id: {}'.format(task.task_id))
-
         if args.async:
             return
 
@@ -226,6 +263,33 @@ class Shell(cmd.Cmd):
             self.logger.error('Task terminated with non-null value ({})'
                               .format(ret['retcode']))
 
+    def do_call(self, line_):
+        args = self.merge_line_args(line_)
+        command = ' '.join(args.command_args)
+
+        self.logger.debug('Executing: {}'.format(command))
+        task_args = [
+            'ocs.run_command',
+        ]
+        task_kwargs = {
+            'args': [command],
+            'time_limit': args.time_limit,
+        }
+        if args.async:
+            task_kwargs.update({
+                'countdown': 0,
+                'priority': 3,
+            })
+        else:
+            task_kwargs.update({
+                # 'immediate': True,
+                'connect_timeout': 3,
+                'countdown': 1,
+                'priority': 7,
+            })
+
+        for i in xrange(args.count):
+            self._do_call_once(task_args, task_kwargs, args)
 
 def setup_history():
     readline.set_history_length(300)
