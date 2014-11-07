@@ -21,7 +21,7 @@ __version__ = '0.1.0'
 
 def pubsub_monitoring(channels, redis_config):
     logger = logging.getLogger('botnet.pubsub')
-    redis_instance = redis.Redis(host='212.47.226.194')
+    redis_instance = redis.Redis(**redis_config)
     pubsub = redis_instance.pubsub()
     for channel in channels.values():
         pubsub.subscribe(channel)
@@ -95,8 +95,9 @@ def parser_add_args(parser, include_call_command=True):
     parser.add_argument('--version', action='version',
                         version='%(prog)s {}'.format(__version__))
 
+    default_broker = os.environ.get('OCS_BOTNET_BROKER', '127.0.0.1')
     parser.add_argument('-b', '--broker', help="Broker hostname/ip",
-                        default='127.0.0.1')
+                        default=default_broker)
     parser.add_argument('--amqp-url', help="AMQP connection url")
     parser.add_argument('-t', '--time-limit', help="Task time limit",
                         default=60)
