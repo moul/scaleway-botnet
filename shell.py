@@ -101,6 +101,8 @@ def parser_add_args(parser, include_call_command=True):
     parser.add_argument('--amqp-url', help="AMQP connection url")
     parser.add_argument('-t', '--time-limit', help="Task time limit",
                         default=60)
+    parser.add_argument('--async', help="Ignore return value",
+                        action='store_true')
 
     if include_call_command:
         parser.add_argument('command', nargs='?', metavar='COMMAND',
@@ -164,9 +166,29 @@ class Shell(cmd.Cmd):
         app = Celery(broker=args.amqp_url, backend=args.amqp_url)
 
         self.logger.info('Executing: {}'.format(command))
-        task = app.send_task('ocs.run_command', args=[command],
-                             time_limit=args.time_limit)
+        task_args = [
+            'ocs.run_command',
+        ]
+        task_kwargs = {
+            'args': [command],
+            'time_limit': args.time_limit,
+        }
+        if args.async:
+            task_kwargs.update({
+                'countdown': 0,
+            })
+        else:
+            task_kwargs.update({
+                # 'immediate': True,
+                'connect_timeout': 3,
+                'countdown': 1,
+            })
+        task = app.send_task(*task_args, **task_kwargs)
         self.logger.debug('Task id: {}'.format(task.task_id))
+
+        if args.async:
+            return
+
         start_pubsub_monitoring(args, task)
         try:
             ret = task.get()
