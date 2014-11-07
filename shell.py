@@ -151,6 +151,7 @@ class Shell(cmd.Cmd):
         cmd.Cmd.__init__(self)
         self.args = args
         self.logger = logging.getLogger('botnet.shell')
+        self._celery = None
 
     def merge_line_args(self, _line):
         line_args = parse_loop_line(_line)
@@ -159,11 +160,22 @@ class Shell(cmd.Cmd):
                 line_args.__dict__[key] = value
         return line_args
 
+    @property
+    def celery(self):
+        if not self._celery:
+            self._celery = Celery(
+                broker=self.args.amqp_url,
+                backend=self.args.amqp_url
+            )
+        return self._celery
+    
+    def do_ls(self, line_):
+        print(self.celery.control.inspect().stats())
+    
     def do_call(self, line_):
         args = self.merge_line_args(line_)
 
         command = ' '.join(args.command_args)
-        app = Celery(broker=args.amqp_url, backend=args.amqp_url)
 
         self.logger.info('Executing: {}'.format(command))
         task_args = [
@@ -183,7 +195,7 @@ class Shell(cmd.Cmd):
                 'connect_timeout': 3,
                 'countdown': 1,
             })
-        task = app.send_task(*task_args, **task_kwargs)
+        task = self.celery.send_task(*task_args, **task_kwargs)
         self.logger.debug('Task id: {}'.format(task.task_id))
 
         if args.async:
