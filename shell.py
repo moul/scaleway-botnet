@@ -179,12 +179,16 @@ class Shell(cmd.Cmd):
 
     def do_purge(self, line_):
         purged = self.celery.control.purge()
-        logging.warn('{} purged'.format(purged))
+        self.logger.warn('{} purged'.format(purged))
 
     def do_killall(self, line_):
-        for client, actives in self.celery.control.inspect().active().items():
+        ret = self.celery.control.inspect().active()
+        if not ret:
+            self.logger.warn('0 tasks killed')
+            return
+        for client, actives in ret.items():
             for active in actives:
-                logging.warn('Revoking {}'.format(active['id']))
+                self.logger.warn('{} tasks killed'.format(active['id']))
                 revoke(active['id'], terminate=True)
     
     def do_stats(self, line_):
@@ -201,73 +205,81 @@ class Shell(cmd.Cmd):
         headers = []
         if show['stats']:
             stats = self.celery.control.inspect().stats()
-            logging.debug(repr(stats))
+            if not stats:
+                logging.warn('No such client')
+                return
+            self.logger.debug(repr(stats))
             headers += ['client', 'max-concurrency', 'requests']
         if show['active']:
             active = self.celery.control.inspect().active()
             headers.append('active')
-            logging.debug(repr(active))
+            self.logger.debug(repr(active))
         if show['reserved']:
             reserved = self.celery.control.inspect().reserved()
-            logging.debug(repr(reserved))
+            self.logger.debug(repr(reserved))
             headers.append('reserved')
         if show['ping']:
             ping = self.celery.control.inspect().ping()
-            logging.debug(repr(ping))
+            self.logger.debug(repr(ping))
             headers.append('ping')
         if show['scheduled']:
             scheduled = self.celery.control.inspect().scheduled()
-            logging.debug(repr(scheduled))
+            self.logger.debug(repr(scheduled))
         if show['registered']:
             registered = self.celery.control.inspect().registered()
-            logging.debug(repr(registered))
+            self.logger.debug(repr(registered))
         if show['report']:
             report = self.celery.control.inspect().report()
-            logging.debug(repr(report))
+            self.logger.debug(repr(report))
 
         clients = stats.keys()
         self.logger.debug(repr(stats))
         table = PrettyTable(headers)
+        totals = {}
         for client in clients:
             row = []
             if show['stats']:
+                if not 'client' in totals:
+                    totals['client'] = 0
+                    totals['max-concurrency'] = 0
+                    totals['requests'] = 0
+                totals['client'] += 1
+                totals['max-concurrency'] += stats[client]['pool']['max-concurrency']
+                totals['requests'] += sum(stats[client]['total'].values())
                 row.append(client)
                 row.append(stats[client]['pool']['max-concurrency'])
                 row.append(sum(stats[client]['total'].values()))
+                
             if show['active']:
+                if not 'active' in totals:
+                    totals['active'] = 0
+                totals['active'] += len(active[client])
                 row.append(len(active[client]))
+                
             if show['reserved']:
+                if not 'reserved' in totals:
+                    totals['reserved'] = 0
+                totals['reserved'] += len(reserved[client])
                 row.append(len(reserved[client]))
+                
             if show['ping']:
                 row.append(ping[client].values())
+                
             table.add_row(row)
+
+        totals_row = []
+        separator_row = ['-'] * len(headers)
+        for header in headers:
+            if header in totals:
+                totals_row.append(totals[header])
+            else:
+                totals_row.append('')
+        table.add_row(separator_row)
+        table.add_row(totals_row)
         print(table)
 
 
-    def _do_call_once(self, task_args, task_kwargs, args):
-        task = self.celery.send_task(*task_args, **task_kwargs)
-        self.logger.debug('Task id: {}'.format(task.task_id))
-        if args.async:
-            return
-
-        start_pubsub_monitoring(args, task)
-        try:
-            ret = task.get()
-        except KeyboardInterrupt:
-            self.logger.warn('^C: revoking task...')
-            revoke(task.task_id, terminate=True)
-            sys.exit(1)
-        if ret['retcode'] is 0:
-            self.logger.debug('Task succeeded (retcode=0)')
-        else:
-            self.logger.error('Task terminated with non-null value ({})'
-                              .format(ret['retcode']))
-
-    def do_call(self, line_):
-        args = self.merge_line_args(line_)
-        command = ' '.join(args.command_args)
-
-        self.logger.debug('Executing: {}'.format(command))
+    def _do_call_once(self, command, args):
         task_args = [
             'ocs.run_command',
         ]
@@ -288,8 +300,41 @@ class Shell(cmd.Cmd):
                 'priority': 7,
             })
 
+        task = self.celery.send_task(*task_args, **task_kwargs)
+        self.logger.debug('Task id: {}'.format(task.task_id))
+        if args.async:
+            return
+
+        start_pubsub_monitoring(args, task)
+        try:
+            ret = task.get()
+        except KeyboardInterrupt:
+            self.logger.warn('^C: revoking task...')
+            revoke(task.task_id, terminate=True)
+            sys.exit(1)
+        if ret['retcode'] is 0:
+            self.logger.debug('Task succeeded (retcode=0)')
+        else:
+            self.logger.error('Task terminated with non-null value ({})'
+                              .format(ret['retcode']))
+
+    def do_broadcast(self, line_):
+        args = self.merge_line_args(line_)
+        command = ' '.join(args.command_args)
+
+        for client in self.celery.control.inspect().stats().keys():
+            args.client = client
+            self._do_call_once(command, args)
+
+            
+    def do_call(self, line_):
+        args = self.merge_line_args(line_)
+        command = ' '.join(args.command_args)
+
+        self.logger.debug('Executing: {}'.format(command))
+
         for i in xrange(args.count):
-            self._do_call_once(task_args, task_kwargs, args)
+            self._do_call_once(command, args)
 
 def setup_history():
     readline.set_history_length(300)
