@@ -39,7 +39,7 @@ def pubsub_monitoring(channels, redis_config):
                     logger.debug('Process spawned on remote host with pid={}'
                                  .format(message['data']))
                 elif message['channel'] == channels['finish']:
-                    logger.info('Task finished')
+                    logger.debug('Task finished')
                     return True
                 else:
                     raise NotImplementedError('Unknown message channel: {}'
@@ -165,6 +165,20 @@ class Shell(cmd.Cmd):
         self.logger = logging.getLogger('botnet.shell')
         self._celery = None
 
+    def cmdloop(self):
+        try:
+            cmd.Cmd.cmdloop(self)
+        except KeyboardInterrupt as e:
+            print('^C')
+            self.cmdloop()
+                                
+    def do_exit(self, args):
+        return -1
+
+    def do_EOF(self, args):
+        print('^D')
+        return self.do_exit(args)
+                        
     def merge_line_args(self, _line):
         return parse_loop_line(_line, args=self.args)
 
