@@ -191,6 +191,13 @@ class Shell(cmd.Cmd):
             )
         return self._celery
 
+    def do_kill(self, line_):
+        args = self.merge_line_args(line_)
+        for task_id in args.command_args:
+            logging.debug('killing task {}'.format(task_id))
+            revoke(task_id, terminate=True)
+            logging.warn('task {} killed'.format(task_id))
+    
     def do_purge(self, line_):
         purged = self.celery.control.purge()
         self.logger.warn('{} purged'.format(purged))
