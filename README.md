@@ -1,6 +1,8 @@
 OCS Botnet
 ==========
 
+[![GuardRails badge](https://badges.production.guardrails.io/moul/scaleway-botnet.svg)](https://www.guardrails.io)
+
 Master/Worker system on Online Labs.
 using Celery to executes command accross workers.
 
